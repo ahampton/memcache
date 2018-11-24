@@ -192,6 +192,15 @@ func legalKey(key string) bool {
 	return true
 }
 
+func quietCmd(cmd command) bool {
+	switch cmd {
+	case cmdSetQ:
+		return true
+	default:
+		return false
+	}
+}
+
 func poolSize() int {
 	s := 8
 	if mp := runtime.GOMAXPROCS(0); mp > s {
@@ -666,6 +675,21 @@ func (c *Client) Set(item *Item) error {
 	return c.populateOne(cmdSet, item, 0)
 }
 
+// Set writes the given item, unconditionally and quietly.
+func (c *Client) SetQuietly(item *Item) error {
+	return c.populateOne(cmdSetQ, item, 0)
+}
+
+// Set writes all given items, unconditionally.
+func (c *Client) SetMulti(items []*Item) error {
+	return c.populateMany(cmdSet, items, 0)
+}
+
+// Set writes all given items, unconditionally and quietly.
+func (c *Client) SetMultiQuietly(items []*Item) error {
+	return c.populateMany(cmdSetQ, items, 0)
+}
+
 // Add writes the given item, if no value already exists for its
 // key. ErrNotStored is returned if that condition is not met.
 func (c *Client) Add(item *Item) error {
@@ -691,13 +715,66 @@ func (c *Client) populateOne(cmd command, item *Item, casid uint64) error {
 	if err != nil {
 		return err
 	}
-	hdr, _, _, _, err := c.parseResponse(item.Key, cn)
-	if err != nil {
-		c.condRelease(cn, &err)
-		return err
+	if !quietCmd(cmd) {
+		hdr, _, _, _, err := c.parseResponse(item.Key, cn)
+		if err != nil {
+			c.condRelease(cn, &err)
+			return err
+		}
+		item.casid = bUint64(hdr[16:24])
 	}
 	c.putFreeConn(cn)
-	item.casid = bUint64(hdr[16:24])
+	return nil
+}
+
+func (c *Client) populateMany(cmd command, items []*Item, casid uint64) error {
+	if len(items) == 1 {
+		return c.populateOne(cmd, items[0], casid)
+	}
+
+	keyMap := make(map[*Addr][]*Item)
+	for _, item := range items {
+		addr, err := c.servers.PickServer(item.Key)
+		if err != nil {
+			return err
+		}
+		keyMap[addr] = append(keyMap[addr], item)
+	}
+
+	var chs []chan bool
+	for addr, items := range keyMap {
+		ch := make(chan bool)
+		chs = append(chs, ch)
+		go func(addr *Addr, items []*Item, ch chan bool) {
+			defer close(ch)
+			cn, err := c.getConn(addr)
+			if err != nil {
+				return
+			}
+			defer c.condRelease(cn, &err)
+			extras := make([]byte, 8)
+			for _, i := range items {
+				putUint32(extras, i.Flags)
+				putUint32(extras[4:8], uint32(i.Expiration))
+				if err = c.sendConnCommand(cn, i.Key, cmd, i.Value, casid, extras); err != nil {
+					return
+				}
+				if !quietCmd(cmd) {
+					hdr, _, _, _, err := c.parseResponse(i.Key, cn)
+					if err != nil {
+						return
+					}
+					i.casid = bUint64(hdr[16:24])
+				}
+			}
+			ch <- true
+		}(addr, items, ch)
+	}
+
+	for _, ch := range chs {
+		<- ch
+	}
+
 	return nil
 }
 
