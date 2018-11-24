@@ -42,7 +42,7 @@ func (c *Client) totalOpen() int {
 func newLocalhostServer(tb testing.TB) *Client {
 	c, err := net.Dial("tcp", testServer)
 	if err != nil {
-		tb.Skip("skipping test; no server running at %s", testServer)
+		tb.Skipf("skipping test; no server running at %s", testServer)
 		return nil
 	}
 	c.Write([]byte("flush_all\r\n"))
@@ -126,6 +126,32 @@ func testWithClient(t *testing.T, c *Client) {
 	_, err = c.Get("not-exists")
 	if err != ErrCacheMiss {
 		t.Errorf("get(not-exists): expecting %v, got %v instead", ErrCacheMiss, err)
+	}
+
+	// Get and set a unicode key
+	quxKey := "Hello_世界"
+	qux := &Item{Key: quxKey, Value: []byte("hello world")}
+	err = c.Set(qux)
+	checkErr(err, "first set(Hello_世界): %v", err)
+	it, err = c.Get(quxKey)
+	checkErr(err, "get(Hello_世界): %v", err)
+	if it.Key != quxKey {
+		t.Errorf("get(Hello_世界) Key = %q, want Hello_世界", it.Key)
+	}
+	if string(it.Value) != "hello world" {
+		t.Errorf("get(Hello_世界) Value = %q, want hello world", string(it.Value))
+	}
+
+	// Set malformed keys
+	malFormed := &Item{Key: "foo bar", Value: []byte("foobarval")}
+	err = c.Set(malFormed)
+	if err != ErrMalformedKey {
+		t.Errorf("set(foo bar) should return ErrMalformedKey instead of %v", err)
+	}
+	malFormed = &Item{Key: "foo" + string(0x7f), Value: []byte("foobarval")}
+	err = c.Set(malFormed)
+	if err != ErrMalformedKey {
+		t.Errorf("set(foo<0x7f>) should return ErrMalformedKey instead of %v", err)
 	}
 
 	// Add

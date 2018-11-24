@@ -53,7 +53,7 @@ var (
 	ErrNoStats = errors.New("memcache: no statistics available")
 
 	// ErrMalformedKey is returned when an invalid key is used.
-	// Keys must be at maximum 250 bytes long, ASCII, and not
+	// Keys must be at maximum 250 bytes long and not
 	// contain whitespace or control characters.
 	ErrMalformedKey = errors.New("malformed: key is too long or contains invalid characters")
 
@@ -74,12 +74,12 @@ var (
 	bUint64   = binary.BigEndian.Uint64
 )
 
-// DefaultTimeout is the default socket read/write timeout.
-const DefaultTimeout = time.Duration(100) * time.Millisecond
-
 const (
-	buffered            = 8 // arbitrary buffered channel size, for readability
-	maxIdleConnsPerAddr = 2 // TODO(bradfitz): make this configurable?
+	// DefaultTimeout is the default socket read/write timeout.
+	DefaultTimeout = 100 * time.Millisecond
+
+	// DefaultMaxIdleConns is the default maximum for idle connections.
+	DefaultMaxIdleConns = 2
 )
 
 type command uint8
@@ -185,7 +185,7 @@ func legalKey(key string) bool {
 		return false
 	}
 	for i := 0; i < len(key); i++ {
-		if key[i] <= ' ' || key[i] > 0x7e {
+		if key[i] <= ' ' || key[i] == 0x7f {
 			return false
 		}
 	}
@@ -215,7 +215,7 @@ func New(server ...string) (*Client, error) {
 func NewFromServers(servers Servers) *Client {
 	return &Client{
 		timeout:        DefaultTimeout,
-		maxIdlePerAddr: maxIdleConnsPerAddr,
+		maxIdlePerAddr: DefaultMaxIdleConns,
 		servers:        servers,
 		freeconn:       make(map[string]chan *conn),
 		bufPool:        make(chan []byte, poolSize()),
@@ -262,7 +262,7 @@ func (c *Client) MaxIdleConnsPerAddr() int {
 // the default number (currently 2) is used.
 func (c *Client) SetMaxIdleConnsPerAddr(maxIdle int) {
 	if maxIdle == 0 {
-		maxIdle = maxIdleConnsPerAddr
+		maxIdle = DefaultMaxIdleConns
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -310,9 +310,6 @@ type Item struct {
 
 	// Value is the Item's value.
 	Value []byte
-
-	// Object is the Item's value for use with a Codec.
-	Object interface{}
 
 	// Flags are server-opaque flags whose semantics are entirely
 	// up to the app.
@@ -456,6 +453,10 @@ func (c *Client) Get(key string) (*Item, error) {
 }
 
 func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64, extras []byte) (*conn, error) {
+	if !legalKey(key) {
+		return nil, ErrMalformedKey
+	}
+
 	addr, err := c.servers.PickServer(key)
 	if err != nil {
 		return nil, err
@@ -473,6 +474,10 @@ func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64
 }
 
 func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte, casid uint64, extras []byte) (err error) {
+	if !legalKey(key) {
+		return ErrMalformedKey
+	}
+
 	var buf []byte
 	select {
 	// 24 is header size
@@ -506,7 +511,7 @@ func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte
 	}
 	if kl > 0 {
 		// Key itself
-		buf = append(buf, stobs(key)...)
+		buf = append(buf, []byte(key)...)
 	}
 	if _, err = cn.nc.Write(buf); err != nil {
 		return err
