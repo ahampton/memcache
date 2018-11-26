@@ -154,6 +154,19 @@ func testWithClient(t *testing.T, c *Client) {
 		t.Errorf("set(foo<0x7f>) should return ErrMalformedKey instead of %v", err)
 	}
 
+	// SetQuietly
+	quiet := &Item{Key: "quiet", Value: []byte("Shhh")}
+	err = c.SetQuietly(quiet)
+	checkErr(err, "setQuietly: %v", err)
+	it, err = c.Get(quiet.Key)
+	checkErr(err, "setQuietly: get: %v", err)
+	if it.Key != quiet.Key {
+		t.Errorf("setQuietly: get: Key = %q, want %s", it.Key, quiet.Key)
+	}
+	if string(it.Value) != string(quiet.Value) {
+		t.Errorf("setQuietly: get: Value = %q, want %q", string(it.Value), string(quiet.Value))
+	}
+
 	// Add
 	bar := &Item{Key: "bar", Value: []byte("barval")}
 	err = c.Add(bar)
@@ -179,6 +192,68 @@ func testWithClient(t *testing.T, c *Client) {
 	}
 	if g, e := string(m["bar"].Value), "barval"; g != e {
 		t.Errorf("GetMulti: bar: got %q, want %q", g, e)
+	}
+
+	// SetMulti
+	baz1 := &Item{Key: "baz1", Value: []byte("baz1val")}
+	baz2 := &Item{Key: "baz2", Value: []byte("baz2val"), Flags: 123}
+	err = c.SetMulti([]*Item{baz1, baz2})
+	checkErr(err, "first SetMulti: %v", err)
+	err = c.SetMulti([]*Item{baz1, baz2})
+	checkErr(err, "second SetMulti: %v", err)
+	m, err = c.GetMulti([]string{baz1.Key, baz2.Key})
+	checkErr(err, "SetMulti: %v", err)
+	if g, e := len(m), 2; g != e {
+		t.Errorf("SetMulti: got len(map) = %d, want = %d", g, e)
+	}
+	if _, ok := m[baz1.Key]; !ok {
+		t.Fatalf("SetMulti: didn't get key '%s'", baz1.Key)
+	}
+	if _, ok := m[baz2.Key]; !ok {
+		t.Fatalf("SetMulti: didn't get key '%s'", baz2.Key)
+	}
+	if g, e := string(m[baz1.Key].Value), string(baz1.Value); g != e {
+		t.Errorf("SetMulti: got %q, want %q", g, e)
+	}
+	if g, e := string(m[baz2.Key].Value), string(baz2.Value); g != e {
+		t.Errorf("SetMulti: got %q, want %q", g, e)
+	}
+	if m[baz1.Key].Flags != baz1.Flags {
+		t.Errorf("SetMulti: Flags = %v, want %v", m[baz1.Key].Flags, baz1.Flags)
+	}
+	if m[baz2.Key].Flags != baz2.Flags {
+		t.Errorf("SetMulti: Flags = %v, want %v", m[baz2.Key].Flags, baz2.Flags)
+	}
+
+	// SetMultiQuietly
+	quiet1 := &Item{Key: "quiet1", Value: []byte("quiet1val")}
+	quiet2 := &Item{Key: "quiet2", Value: []byte("quiet2val"), Flags: 123}
+	err = c.SetMulti([]*Item{quiet1, quiet2})
+	checkErr(err, "first SetMultiQuietly: %v", err)
+	err = c.SetMulti([]*Item{quiet1, quiet2})
+	checkErr(err, "second SetMultiQuietly: %v", err)
+	m, err = c.GetMulti([]string{quiet1.Key, quiet2.Key})
+	checkErr(err, "SetMultiQuietly: %v", err)
+	if g, e := len(m), 2; g != e {
+		t.Errorf("SetMultiQuietly: got len(map) = %d, want = %d", g, e)
+	}
+	if _, ok := m[quiet1.Key]; !ok {
+		t.Fatalf("SetMultiQuietly: didn't get key '%s'", quiet1.Key)
+	}
+	if _, ok := m[quiet2.Key]; !ok {
+		t.Fatalf("SetMultiQuietly: didn't get key '%s'", quiet2.Key)
+	}
+	if g, e := string(m[quiet1.Key].Value), string(quiet1.Value); g != e {
+		t.Errorf("SetMultiQuietly: got %q, want %q", g, e)
+	}
+	if g, e := string(m[quiet2.Key].Value), string(quiet2.Value); g != e {
+		t.Errorf("SetMultiQuietly: got %q, want %q", g, e)
+	}
+	if m[quiet1.Key].Flags != quiet1.Flags {
+		t.Errorf("SetMultiQuietly: Flags = %v, want %v", m[quiet1.Key].Flags, quiet1.Flags)
+	}
+	if m[quiet2.Key].Flags != quiet2.Flags {
+		t.Errorf("SetMultiQuietly: Flags = %v, want %v", m[quiet2.Key].Flags, quiet2.Flags)
 	}
 
 	// Delete
