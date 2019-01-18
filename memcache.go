@@ -234,12 +234,29 @@ func NewFromServers(servers Servers) *Client {
 // Client is a memcache client.
 // It is safe for unlocked use by multiple concurrent goroutines.
 type Client struct {
+	keepalive      time.Duration
 	timeout        time.Duration
 	maxIdlePerAddr int
 	servers        Servers
 	mu             sync.RWMutex
 	freeconn       map[string]chan *conn
 	bufPool        chan []byte
+}
+
+// KeepAlive returns the interval for keepAlive packets.
+// By default, it's disabled.
+func (c *Client) KeepAlive() time.Duration {
+	return c.keepalive
+}
+
+// SetKeepAlive specifies the interval for keepAlive packets.
+// If zero, it's disabled. This method must be called before any
+// connections to the memcached server are opened.
+func (c *Client) SetKeepAlive(keepalive time.Duration) {
+	if keepalive <= time.Duration(0) {
+		keepalive = 0
+	}
+	c.keepalive = keepalive
 }
 
 // Timeout returns the socket read/write timeout. By default, it's
@@ -420,8 +437,15 @@ func (cte *ConnectTimeoutError) Temporary() bool {
 }
 
 func (c *Client) dial(addr *Addr) (net.Conn, error) {
+	d := net.Dialer{}
+
+	if c.keepalive > 0 {
+		d.KeepAlive = c.keepalive
+	}
+
 	if c.timeout > 0 {
-		conn, err := net.DialTimeout(addr.n, addr.s, c.timeout)
+		d.Timeout = c.timeout
+		conn, err := d.Dial(addr.n, addr.s)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				return nil, &ConnectTimeoutError{addr}
@@ -430,7 +454,7 @@ func (c *Client) dial(addr *Addr) (net.Conn, error) {
 		}
 		return conn, nil
 	}
-	return net.Dial(addr.n, addr.s)
+	return d.Dial(addr.n, addr.s)
 }
 
 func (c *Client) getConn(addr *Addr) (*conn, error) {
