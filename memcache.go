@@ -194,7 +194,7 @@ func legalKey(key string) bool {
 
 func quietCmd(cmd command) bool {
 	switch cmd {
-	case cmdSetQ:
+	case cmdDeleteQ, cmdSetQ:
 		return true
 	default:
 		return false
@@ -739,15 +739,14 @@ func (c *Client) populateOne(cmd command, item *Item, casid uint64) error {
 	if err != nil {
 		return err
 	}
+	defer c.condRelease(cn, &err)
 	if !quietCmd(cmd) {
 		hdr, _, _, _, err := c.parseResponse(item.Key, cn)
 		if err != nil {
-			c.condRelease(cn, &err)
 			return err
 		}
 		item.casid = bUint64(hdr[16:24])
 	}
-	c.putFreeConn(cn)
 	return nil
 }
 
@@ -805,13 +804,85 @@ func (c *Client) populateMany(cmd command, items []*Item, casid uint64) error {
 // Delete deletes the item with the provided key. The error ErrCacheMiss is
 // returned if the item didn't already exist in the cache.
 func (c *Client) Delete(key string) error {
-	cn, err := c.sendCommand(key, cmdDelete, nil, 0, nil)
+	return c.executeOne(cmdDelete, key)
+}
+
+// Delete deletes the item with the provided key, quietly.
+func (c *Client) DeleteQuietly(key string) error {
+	return c.executeOne(cmdDeleteQ, key)
+}
+
+// DeleteMulti deletes the items with the provided keys. The error ErrCacheMiss
+// is returned if a item didn't already exist in the cache.
+func (c *Client) DeleteMulti(keys []string) error {
+	return c.executeMany(cmdDelete, keys)
+}
+
+// Delete deletes the items with the provided keys, quietly.
+func (c *Client) DeleteMultiQuietly(keys []string) error {
+	return c.executeMany(cmdDeleteQ, keys)
+}
+
+func (c *Client) executeOne(cmd command, key string) error {
+	cn, err := c.sendCommand(key, cmd, nil, 0, nil)
 	if err != nil {
 		return err
 	}
-	_, _, _, _, err = c.parseResponse(key, cn)
-	c.condRelease(cn, &err)
-	return err
+	defer c.condRelease(cn, &err)
+	if !quietCmd(cmd) {
+		_, _, _, _, err = c.parseResponse(key, cn)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) executeMany(cmd command, keys []string) error {
+	if len(keys) == 1 {
+		return c.executeOne(cmd, keys[0])
+	}
+
+	keyMap := make(map[*Addr][]string)
+	for _, key := range keys {
+		addr, err := c.servers.PickServer(key)
+		if err != nil {
+			return err
+		}
+		keyMap[addr] = append(keyMap[addr], key)
+	}
+
+	var chs []chan bool
+	for addr, keys := range keyMap {
+		ch := make(chan bool)
+		chs = append(chs, ch)
+		go func(addr *Addr, keys []string, ch chan bool) {
+			defer close(ch)
+			cn, err := c.getConn(addr)
+			if err != nil {
+				return
+			}
+			defer c.condRelease(cn, &err)
+			for _, key := range keys {
+				if err = c.sendConnCommand(cn, key, cmd, nil, 0, nil); err != nil {
+					return
+				}
+				if !quietCmd(cmd) {
+					_, _, _, _, err := c.parseResponse(key, cn)
+					if err != nil {
+						return
+					}
+				}
+			}
+			ch <- true
+		}(addr, keys, ch)
+	}
+
+	for _, ch := range chs {
+		<- ch
+	}
+
+	return nil
 }
 
 // Increment atomically increments key by delta. The return value is

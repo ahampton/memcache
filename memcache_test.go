@@ -257,11 +257,61 @@ func testWithClient(t *testing.T, c *Client) {
 	}
 
 	// Delete
-	err = c.Delete("foo")
+	key := "foo"
+	item, err := c.Get(key)
+	checkErr(err, "pre-Delete: %v", err)
+	if item == nil {
+		t.Error("pre-Delete want item, got nil")
+	}
+	err = c.Delete(key)
 	checkErr(err, "Delete: %v", err)
-	_, err = c.Get("foo")
+	_, err = c.Get(key)
 	if err != ErrCacheMiss {
-		t.Errorf("post-Delete want ErrCacheMiss, got %v", err)
+		t.Error("post-Delete want ErrCacheMiss, got nil",)
+	}
+
+	// DeleteQuietly
+	key = "quiet"
+	item, err = c.Get(key)
+	checkErr(err, "pre-DeleteQuietly: %v", err)
+	if item == nil {
+		t.Error("pre-DeleteQuietly want item, got nil",)
+	}
+	err = c.DeleteQuietly(key)
+	checkErr(err, "DeleteQuietly: %v", err)
+	_, err = c.Get(key)
+	if err != ErrCacheMiss {
+		t.Errorf("post-DeleteQuietly want ErrCacheMiss, got %v", err)
+	}
+
+	// DeleteMulti
+	keys := []string{"baz1", "baz2"}
+	items, err := c.GetMulti(keys)
+	checkErr(err, "pre-DeleteMulti: %v", err)
+	if len(items) != len(keys) {
+		t.Errorf("pre-DeleteMulti want results, got %v", items)
+	}
+	err = c.DeleteMulti(keys)
+	checkErr(err, "DeleteMulti: %v", err)
+	items, err = c.GetMulti(keys)
+	checkErr(err, "post-DeleteMulti: %v", err)
+	if len(items) != 0 {
+		t.Errorf("post-DeleteMulti want no results, got %v", items)
+	}
+
+	// DeleteMultiQuietly
+	keys = []string{"quiet1", "quiet2"}
+	items, err = c.GetMulti(keys)
+	checkErr(err, "pre-DeleteMultiQuietly: %v", err)
+	if len(items) != len(keys) {
+		t.Errorf("pre-DeleteMultiQuietly want results, got %v", items)
+	}
+	err = c.DeleteMultiQuietly(keys)
+	checkErr(err, "DeleteMultiQuietly: %v", err)
+	items, err = c.GetMulti(keys)
+	checkErr(err, "post-DeleteMultiQuietly: %v", err)
+	if len(items) != 0 {
+		t.Errorf("post-DeleteMultiQuietly want no results, got %v", items)
 	}
 
 	// Incr/Decr
