@@ -267,7 +267,11 @@ func testWithClient(t *testing.T, c *Client) {
 	checkErr(err, "Delete: %v", err)
 	_, err = c.Get(key)
 	if err != ErrCacheMiss {
-		t.Error("post-Delete want ErrCacheMiss, got nil",)
+		t.Error("post-Delete want ErrCacheMiss, got nil")
+	}
+	err = c.Delete(key)
+	if err != ErrCacheMiss {
+		t.Error("post-Delete want ErrCacheMiss, got nil")
 	}
 
 	// DeleteQuietly
@@ -275,13 +279,17 @@ func testWithClient(t *testing.T, c *Client) {
 	item, err = c.Get(key)
 	checkErr(err, "pre-DeleteQuietly: %v", err)
 	if item == nil {
-		t.Error("pre-DeleteQuietly want item, got nil",)
+		t.Error("pre-DeleteQuietly want item, got nil")
 	}
 	err = c.DeleteQuietly(key)
 	checkErr(err, "DeleteQuietly: %v", err)
 	_, err = c.Get(key)
 	if err != ErrCacheMiss {
 		t.Errorf("post-DeleteQuietly want ErrCacheMiss, got %v", err)
+	}
+	err = c.DeleteQuietly(key)
+	if err != nil {
+		t.Errorf("post-DeleteQuietly want nil err, got %v", err)
 	}
 
 	// DeleteMulti
@@ -298,6 +306,10 @@ func testWithClient(t *testing.T, c *Client) {
 	if len(items) != 0 {
 		t.Errorf("post-DeleteMulti want no results, got %v", items)
 	}
+	err = c.DeleteMulti(keys)
+	if err == nil {
+		t.Error("post-DeleteMulti want err, got nil")
+	}
 
 	// DeleteMultiQuietly
 	keys = []string{"quiet1", "quiet2"}
@@ -312,6 +324,10 @@ func testWithClient(t *testing.T, c *Client) {
 	checkErr(err, "post-DeleteMultiQuietly: %v", err)
 	if len(items) != 0 {
 		t.Errorf("post-DeleteMultiQuietly want no results, got %v", items)
+	}
+	err = c.DeleteMultiQuietly(keys)
+	if err != nil {
+		t.Errorf("post-DeleteMultiQuietly want nil err, got %v", err)
 	}
 
 	// Incr/Decr

@@ -201,6 +201,15 @@ func quietCmd(cmd command) bool {
 	}
 }
 
+func ignorableError(cmd command, err error) bool {
+	switch cmd {
+	case cmdDeleteQ:
+		return err == ErrCacheMiss
+	default:
+		return false
+	}
+}
+
 func poolSize() int {
 	s := 8
 	if mp := runtime.GOMAXPROCS(0); mp > s {
@@ -654,6 +663,8 @@ func (c *Client) GetMulti(keys []string) (map[string]*Item, error) {
 		keyMap[addr] = append(keyMap[addr], key)
 	}
 
+	var failed []*Addr
+	var errs []error
 	var chs []chan *Item
 	for addr, keys := range keyMap {
 		ch := make(chan *Item)
@@ -662,20 +673,31 @@ func (c *Client) GetMulti(keys []string) (map[string]*Item, error) {
 			defer close(ch)
 			cn, err := c.getConn(addr)
 			if err != nil {
+				failed = append(failed, addr)
+				errs = append(errs, err)
 				return
 			}
 			defer c.condRelease(cn, &err)
 			for _, k := range keys {
 				if err = c.sendConnCommand(cn, k, cmdGetKQ, nil, 0, nil); err != nil {
+					failed = append(failed, addr)
+					errs = append(errs, err)
 					return
 				}
 			}
+			// NOTE: GetKQ 'may' not respond, Noop used as sentinel response
 			if err = c.sendConnCommand(cn, "", cmdNoop, nil, 0, nil); err != nil {
+				failed = append(failed, addr)
+				errs = append(errs, err)
 				return
 			}
 			var item *Item
 			for {
 				item, err = c.parseItemResponse("", cn, false)
+				if err != nil {
+					failed = append(failed, addr)
+					errs = append(errs, err)
+				}
 				if item == nil || item.Key == "" {
 					// Noop response
 					break
@@ -691,6 +713,21 @@ func (c *Client) GetMulti(keys []string) (map[string]*Item, error) {
 			m[item.Key] = item
 		}
 	}
+
+	if len(failed) > 0 {
+		var buf bytes.Buffer
+		buf.WriteString("failed to get some servers: ")
+		for i, addr := range failed {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(addr.String())
+			buf.WriteString(": ")
+			buf.WriteString(errs[i].Error())
+		}
+		return nil, errors.New(buf.String())
+	}
+
 	return m, nil
 }
 
@@ -764,6 +801,8 @@ func (c *Client) populateMany(cmd command, items []*Item, casid uint64) error {
 		keyMap[addr] = append(keyMap[addr], item)
 	}
 
+	var failed []*Addr
+	var errs []error
 	var chs []chan bool
 	for addr, items := range keyMap {
 		ch := make(chan bool)
@@ -772,6 +811,8 @@ func (c *Client) populateMany(cmd command, items []*Item, casid uint64) error {
 			defer close(ch)
 			cn, err := c.getConn(addr)
 			if err != nil {
+				failed = append(failed, addr)
+				errs = append(errs, err)
 				return
 			}
 			defer c.condRelease(cn, &err)
@@ -780,12 +821,16 @@ func (c *Client) populateMany(cmd command, items []*Item, casid uint64) error {
 				putUint32(extras, i.Flags)
 				putUint32(extras[4:8], uint32(i.Expiration))
 				if err = c.sendConnCommand(cn, i.Key, cmd, i.Value, casid, extras); err != nil {
+					failed = append(failed, addr)
+					errs = append(errs, err)
 					return
 				}
 				if !quietCmd(cmd) {
 					hdr, _, _, _, err := c.parseResponse(i.Key, cn)
 					if err != nil {
-						return
+						failed = append(failed, addr)
+						errs = append(errs, err)
+						continue
 					}
 					i.casid = bUint64(hdr[16:24])
 				}
@@ -796,6 +841,20 @@ func (c *Client) populateMany(cmd command, items []*Item, casid uint64) error {
 
 	for _, ch := range chs {
 		<- ch
+	}
+
+	if len(failed) > 0 {
+		var buf bytes.Buffer
+		buf.WriteString("failed to populate some servers: ")
+		for i, addr := range failed {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(addr.String())
+			buf.WriteString(": ")
+			buf.WriteString(errs[i].Error())
+		}
+		return errors.New(buf.String())
 	}
 
 	return nil
@@ -834,7 +893,37 @@ func (c *Client) executeOne(cmd command, key string) error {
 		if err != nil {
 			return err
 		}
+	} else {
+		// NOTE: Quiet 'may' return error, Noop used as sentinel response
+		err = c.sendConnCommand(cn, "", cmdNoop, nil, 0, nil)
+		if err != nil {
+			return err
+		}
+		var errs []error
+		for {
+			_, k, _, _, err := c.parseResponse(key, cn)
+			if err != nil {
+				if !ignorableError(cmd, err) {
+					errs = append(errs, err)
+				}
+			} else if len(k) == 0 {
+				// Noop response
+				break
+			}
+		}
+		if len(errs) > 0 {
+			var buf bytes.Buffer
+			buf.WriteString("failed to execute: ")
+			for i := range errs {
+				if i > 0 {
+					buf.WriteString(", ")
+				}
+				buf.WriteString(errs[i].Error())
+			}
+			return errors.New(buf.String())
+		}
 	}
+
 	return nil
 }
 
@@ -852,6 +941,8 @@ func (c *Client) executeMany(cmd command, keys []string) error {
 		keyMap[addr] = append(keyMap[addr], key)
 	}
 
+	var failed []*Addr
+	var errs []error
 	var chs []chan bool
 	for addr, keys := range keyMap {
 		ch := make(chan bool)
@@ -860,17 +951,44 @@ func (c *Client) executeMany(cmd command, keys []string) error {
 			defer close(ch)
 			cn, err := c.getConn(addr)
 			if err != nil {
+				failed = append(failed, addr)
+				errs = append(errs, err)
 				return
 			}
 			defer c.condRelease(cn, &err)
 			for _, key := range keys {
 				if err = c.sendConnCommand(cn, key, cmd, nil, 0, nil); err != nil {
+					failed = append(failed, addr)
+					errs = append(errs, err)
 					return
 				}
-				if !quietCmd(cmd) {
+			}
+			if !quietCmd(cmd) {
+				for _, key := range keys {
 					_, _, _, _, err := c.parseResponse(key, cn)
 					if err != nil {
-						return
+						failed = append(failed, addr)
+						errs = append(errs, err)
+					}
+				}
+			} else {
+				// NOTE: Quiet 'may' return error, Noop used as sentinel response
+				err = c.sendConnCommand(cn, "", cmdNoop, nil, 0, nil)
+				if err != nil {
+					failed = append(failed, addr)
+					errs = append(errs, err)
+					return
+				}
+				for {
+					_, k, _, _, err := c.parseResponse("", cn)
+					if err != nil {
+						if !ignorableError(cmd, err) {
+							failed = append(failed, addr)
+							errs = append(errs, err)
+						}
+					} else if len(k) == 0 {
+						// Noop response
+						break
 					}
 				}
 			}
@@ -880,6 +998,20 @@ func (c *Client) executeMany(cmd command, keys []string) error {
 
 	for _, ch := range chs {
 		<- ch
+	}
+
+	if len(failed) > 0 {
+		var buf bytes.Buffer
+		buf.WriteString("failed to execute some servers: ")
+		for i, addr := range failed {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(addr.String())
+			buf.WriteString(": ")
+			buf.WriteString(errs[i].Error())
+		}
+		return errors.New(buf.String())
 	}
 
 	return nil
